@@ -41,14 +41,83 @@ char *shell_execute(const char *input) {
         BG_process(input);
     }
 
+if (sigchld_flag) {
+    int status;
+    pid_t w;
+    while ((w = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        for (int i = 0; i < job_count; i++) {
+            if (jobs[i].pid == w) {
+                if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    jobs[i].status = DONE;
+                    printw("[%d]+ Done %s\n", jobs[i].job_num, jobs[i].cmd);
+                } else if (WIFSTOPPED(status)) {
+                    jobs[i].status = STOPPED;
+                    printw("[%d]+ Stopped %s\n", jobs[i].job_num, jobs[i].cmd);
+                } else if (WIFCONTINUED(status)) {
+                    jobs[i].status = RUNNING;
+                }
+            }
+        }
+    }
+    sigchld_flag = 0;
+}
+
+
     if (strcmp(input, "pwd") == 0) {
         strcpy(result, pwd());
         return result;
     }
 
+    if (sigchld_flag) {
+    int status;
+    pid_t w;
+    while ((w = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        for (int i = 0; i < job_count; i++) {
+            if (jobs[i].pid == w) {
+                if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    jobs[i].status = DONE;
+                    printw("[%d]+ Done %s\n", jobs[i].job_num, jobs[i].cmd);
+                } else if (WIFSTOPPED(status)) {
+                    jobs[i].status = STOPPED;
+                    printw("[%d]+ Stopped %s\n", jobs[i].job_num, jobs[i].cmd);
+                } else if (WIFCONTINUED(status)) {
+                    jobs[i].status = RUNNING;
+                }
+            }
+        }
+    }
+    sigchld_flag = 0;
+}
+
+
     if (strcmp(input, "ls") == 0) {
         strcpy(result, ls());
         return result;
+    }
+
+    if (sigchld_flag) {
+    int status;
+    pid_t w;
+    while ((w = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        for (int i = 0; i < job_count; i++) {
+            if (jobs[i].pid == w) {
+                if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    jobs[i].status = DONE;
+                    printw("[%d]+ Done %s\n", jobs[i].job_num, jobs[i].cmd);
+                } else if (WIFSTOPPED(status)) {
+                    jobs[i].status = STOPPED;
+                    printw("[%d]+ Stopped %s\n", jobs[i].job_num, jobs[i].cmd);
+                } else if (WIFCONTINUED(status)) {
+                    jobs[i].status = RUNNING;
+                }
+            }
+        }
+    }
+    sigchld_flag = 0;
+}
+
+    if (strcmp(input, "sleep") == 0) {
+        
     }
 
     if (strcmp(input, "exit") == 0) {
@@ -58,34 +127,3 @@ char *shell_execute(const char *input) {
 
     return "command not found\n";
 }
-
-/*
-char *shell_execute(const char *input) {
-    
-    result[0] = '\0';
-
-    if (strcmp(input, "pwd") == 0) {
-        strcpy(result, pwd());
-        return result;
-    }
-
-    if (strcmp(input, "ls") == 0) {
-        strcpy(result, ls());
-        return result;
-    }
-
-    if (strncmp(input, "cd", 2) == 0) {
-        const char *arg = input + 2;
-        while (*arg == ' ') arg++;
-        strcpy(result, cd(NULL));
-        return result;
-    }
-
-    if (strcmp(input, "exit") == 0) {
-        endwin(); 
-        exit(0);
-    }
-
-    return "command not found\n";
-}
-*/
