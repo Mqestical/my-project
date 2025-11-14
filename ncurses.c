@@ -18,10 +18,25 @@ char *shell_execute(const char *input) {
         BG_process(input);
         return "";
     }
-
+    
+    char mkdir_op[256];
+    char cmd_copy[256];
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';  // Fix: was 256
+    
+    char folder[256];
+    
+    // Check mkdir FIRST, before anything else modifies the string
+    if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
+        char *out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+    
+    // Now safe to call TAGS since we're not doing mkdir
     char *argv[32];
-    seconds = TAGS(input, argv, &is_sleep);
-
+    seconds = TAGS(cmd_copy, argv, &is_sleep);  // Use cmd_copy here too
+    
     if (is_sleep) {
         clock_nsleep(seconds, 0);
         return "";
@@ -49,7 +64,6 @@ char *shell_execute(const char *input) {
 
     return "command not found\n";
 }
-
 int main() {
     char username[255];
     strcpy(username, getun());

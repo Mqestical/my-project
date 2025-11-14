@@ -17,11 +17,37 @@
 #include "shell.h"
 
 #define MAX_TOKENS 10
+#define MAX_LEN 255
 
 int job_id = 0;
 volatile sig_atomic_t sigchld_flag = 0;
 Job *head = NULL;
+// The permission mode for the new directory.
+    // 0755 means:
+    // User (owner): read, write, execute (rwx)
+    // Group: read, execute (r-x)
+    // Others: read, execute (r-x)
+    // 0755 RWXRWXRWX Permissions for MKDIR.
+    // 0755 RWXRWXRWX Permissions for MKDIR.
+mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH; 
 static char output[8192];
+
+char *pwd(void);
+char *ls(void);
+int ends_with_ampersand(const char *input);
+void BG_process(const char *input);
+void clock_nsleep(int seconds, long nanoseconds);
+void sigchld(int signal);
+void sigint(int signal);
+void sigtstp(int signal);
+void sighandler(int signal);
+void add_job(Job **head, const char *cmd);
+void remove_done_jobs(Job **head);
+void print_jobs(Job *head);
+static void trim_whitespace(char *str);
+int TAGS(char *input, char *argv[], bool *is_sleep);
+char* mkdirCMD(char* dirname, char* output_buf, size_t buf_size);
+bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
 
 // ----- Internal command: pwd -----
 char *pwd(void) {
@@ -67,6 +93,30 @@ char *ls(void) {
     close(dirfd);
     remove_done_jobs(&head);
     return output;
+}
+
+// ------------------------- Internal Command: MaKeDIRectory CMD -----------------------------
+char* mkdirCMD(char* dirname, char* output_buf, size_t buf_size) {
+    int ret = syscall(SYS_mkdirat, AT_FDCWD, dirname, mode);
+
+    if (ret == 0) {
+        snprintf(output_buf, buf_size, 
+                 "Directory '%s' created with mode 0755 (rwxr-xr-x).\n", dirname);
+    } else {
+        if (errno == EEXIST) {
+            snprintf(output_buf, buf_size, 
+                     "Error: Directory '%s' already exists.\n", dirname);
+        } else if (errno == ENOENT) {
+            snprintf(output_buf, buf_size, 
+                     "Error: Parent directory does not exist for '%s'.\n", dirname);
+        } else {
+            snprintf(output_buf, buf_size, 
+                     "mkdir error: %s\n", strerror(errno));
+        }
+    }
+
+    return output_buf;
+
 }
 
 // ----- Check if input ends with & -----
@@ -188,6 +238,7 @@ void sighandler(int signal) {
 }
 
 // ----- Background process -----
+// ----- Background process -----
 void BG_process(const char *input) {
     if (input == NULL || strlen(input) == 0) return;
 
@@ -217,43 +268,59 @@ void BG_process(const char *input) {
     }
 
     if (pid == 0) {
-        // Child process
+        // child process
         close(pipefd[0]); // close read end
         int seconds;
         char *argv[32];
         bool is_sleep;
-
-        seconds = TAGS(cmd, argv, &is_sleep);
-
+        char folder[256];
+        char mkdir_op[256];
+        char cmd_copy[256];
+        strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
+        cmd_copy[255] = '\0';
+        
         char *out = NULL;
-        if (strcmp(cmd, "ls") == 0) out = ls();
-        else if (strcmp(cmd, "pwd") == 0) out = pwd();
-        else if (is_sleep) clock_nsleep(seconds, 0);
-        else if (strcmp(cmd, "joblist") == 0) _exit(0);
-        else out = "command not found\n";
+
+        if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
+            out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
+        }
+        else {
+            // NOW call TAGS after we know it's not mkdir
+            seconds = TAGS(cmd, argv, &is_sleep);
+            
+            if (is_sleep) clock_nsleep(seconds, 0);
+            else if (strcmp(cmd, "ls") == 0) out = ls();
+            else if (strcmp(cmd, "pwd") == 0) out = pwd();
+            else if (strcmp(cmd, "joblist") == 0) _exit(0);
+            else out = "command not found\n";
+        }
 
         if (out) write(pipefd[1], out, strlen(out));
         close(pipefd[1]);
         _exit(0);
     } else {
-        // Parent process
-        new_job->pid = pid;
-        printw("[%d] %d\n", new_job->job_id, pid);
+    // parent process
+    new_job->pid = pid;
+    printw("[%d] %d\n", new_job->job_id, pid);
+    refresh();
+
+    close(pipefd[1]); // close write end
+    
+    // Set pipe to non-blocking mode
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+    
+    // Try to read any immediate output
+    char buf[8192];
+    int n = read(pipefd[0], buf, sizeof(buf)-1);
+    if (n > 0) {
+        buf[n] = '\0';
+        printw("%s", buf);
         refresh();
-
-        // Non-blocking read from child output
-        close(pipefd[1]); // close write end
-        char buf[8192];
-        int n = read(pipefd[0], buf, sizeof(buf)-1);
-        if (n > 0) {
-            buf[n] = '\0';
-            printw("%s", buf);
-            refresh();
-        }
-        close(pipefd[0]);
     }
+    close(pipefd[0]);
 }
-
+}
 // ----- Tokenize And Get Sleep (TAGS) -----
 int TAGS(char *input, char *argv[], bool *is_sleep) {
     int argc = 0;
@@ -291,4 +358,24 @@ static void trim_whitespace(char *str) {
     while (end > str && isspace((unsigned char)*end)) end--;
 
     *(end + 1) = '\0';
+}
+
+bool TAGMKDIR(const char *input, char *folder_name, size_t max_len) { // Tokenize And Get MaKe DIRectory.
+    if (input == NULL || folder_name == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    // tokenize
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "mkdir") != 0) return false;
+
+    token = strtok(NULL, " \t\n"); // next token is folder name
+    if (token == NULL) return false;
+
+    // copy folder name to output
+    strncpy(folder_name, token, max_len - 1);
+    folder_name[MAX_LEN - 1] = '\0';
+    return true;
 }
