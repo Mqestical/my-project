@@ -46,4 +46,9 @@ bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
 char* rmdirCMD(char* dirname, char* output_buf, size_t buf_size);
 bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
 bool TAGRMDIR(const char *input, char *folder_name, size_t max_len);
+void fg_job(int job_id);
+void bg_job(int job_id);
+bool parse_job_command(const char *input, char *cmd, int *job_id);
+char* cdCMD(char* dirname, char* output_buf, size_t buf_size);
+bool TAGCD(const char *input, char *dir_name, size_t max_len);
 #endif

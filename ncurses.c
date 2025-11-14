@@ -25,15 +25,36 @@ char *shell_execute(const char *input) {
     cmd_copy[255] = '\0';
     
     char folder[256];
+    char cmd[256];
+    int job_num;
     
-    // Check mkdir FIRST
+    // Check for fg command
+    if (parse_job_command(input, cmd, &job_num)) {
+        if (strcmp(cmd, "fg") == 0) {
+            fg_job(job_num);
+            return "";
+        }
+        if (strcmp(cmd, "bg") == 0) {
+            bg_job(job_num);
+            return "";
+        }
+    }
+    
+    char dir[256];
+if (TAGCD(input, dir, sizeof(dir))) {
+    char *out = cdCMD(dir, mkdir_op, sizeof(mkdir_op));
+    strcpy(result, out);
+    return result;
+}
+
+    // Check mkdir
     if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
         char *out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
         strcpy(result, out);
         return result;
     }
     
-    // Check rmdir - need fresh copy since TAGMKDIR modified cmd_copy
+    // Check rmdir
     strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
     cmd_copy[255] = '\0';
     
@@ -43,7 +64,6 @@ char *shell_execute(const char *input) {
         return result;
     }
     
-    // Now safe to call TAGS
     char *argv[32];
     strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
     cmd_copy[255] = '\0';
@@ -76,6 +96,7 @@ char *shell_execute(const char *input) {
 
     return "command not found\n";
 }
+
 int main() {
     char username[255];
     strcpy(username, getun());

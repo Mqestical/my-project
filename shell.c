@@ -51,6 +51,12 @@ bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
 char* rmdirCMD(char* dirname, char* output_buf, size_t buf_size);
 bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
 bool TAGRMDIR(const char *input, char *folder_name, size_t max_len);
+void fg_job(int job_id);
+void bg_job(int job_id);
+bool parse_job_command(const char *input, char *cmd, int *job_id);
+bool TAGCD(const char *input, char *dir_name, size_t max_len);
+char* cdCMD(char* dirname, char* output_buf, size_t buf_size);
+
 
 // ----- Internal command: pwd -----
 char *pwd(void) {
@@ -142,6 +148,31 @@ char* rmdirCMD(char* dirname, char* output_buf, size_t buf_size) {
         } else {
             snprintf(output_buf, buf_size, 
                      "rmdir error: %s\n", strerror(errno));
+        }
+    }
+
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Change Directory -----------------------------
+char* cdCMD(char* dirname, char* output_buf, size_t buf_size) {
+    int ret = syscall(SYS_chdir, dirname);
+
+    if (ret == 0) {
+        snprintf(output_buf, buf_size, "Changed directory to '%s'\n", dirname);
+    } else {
+        if (errno == ENOENT) {
+            snprintf(output_buf, buf_size, 
+                     "Error: Directory '%s' does not exist.\n", dirname);
+        } else if (errno == ENOTDIR) {
+            snprintf(output_buf, buf_size, 
+                     "Error: '%s' is not a directory.\n", dirname);
+        } else if (errno == EACCES) {
+            snprintf(output_buf, buf_size, 
+                     "Error: Permission denied for '%s'.\n", dirname);
+        } else {
+            snprintf(output_buf, buf_size, 
+                     "cd error: %s\n", strerror(errno));
         }
     }
 
@@ -297,59 +328,57 @@ void BG_process(const char *input) {
     }
 
     if (pid == 0) {
-        // child process
-        close(pipefd[0]); // close read end
-        int seconds;
-        char *argv[32];
-        bool is_sleep;
-        char folder[256];
-        char mkdir_op[256];
-        char cmd_copy[256];
-        strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
-        cmd_copy[255] = '\0';
-        
- char *out = NULL;
-
-if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
-    out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
-}
-else if (TAGRMDIR(cmd_copy, folder, sizeof(folder))) {
-    out = rmdirCMD(folder, mkdir_op, sizeof(mkdir_op));  // reuse mkdir_op buffer
-}
-else {
-    seconds = TAGS(cmd, argv, &is_sleep);
+    // child process
+    close(pipefd[0]); // close read end
+    int seconds;
+    char *argv[32];
+    bool is_sleep;
+    char folder[256];
+    char mkdir_op[256];
+    char cmd_copy[256];
+    char cmd_name[256];
+    int job_num;
     
-    if (is_sleep) clock_nsleep(seconds, 0);
-    else if (strcmp(cmd, "ls") == 0) out = ls();
-    else if (strcmp(cmd, "pwd") == 0) out = pwd();
-    else if (strcmp(cmd, "joblist") == 0) _exit(0);
-    else out = "command not found\n";
-}
-
-        if (out) write(pipefd[1], out, strlen(out));
-        close(pipefd[1]);
-        _exit(0);
-    } else {
-    // parent process
-    new_job->pid = pid;
-    printw("[%d] %d\n", new_job->job_id, pid);
-    refresh();
-
-    close(pipefd[1]); // close write end
+    strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
     
-    // Set pipe to non-blocking mode
-    int flags = fcntl(pipefd[0], F_GETFL, 0);
-    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
-    
-    // Try to read any immediate output
-    char buf[8192];
-    int n = read(pipefd[0], buf, sizeof(buf)-1);
-    if (n > 0) {
-        buf[n] = '\0';
-        printw("%s", buf);
-        refresh();
+    char *out = NULL;
+
+    // Check for fg/bg commands
+    if (parse_job_command(cmd_copy, cmd_name, &job_num)) {
+        if (strcmp(cmd_name, "fg") == 0) {
+            fg_job(job_num);
+            _exit(0);
+        }
+        if (strcmp(cmd_name, "bg") == 0) {
+            bg_job(job_num);
+            _exit(0);
+        }
     }
-    close(pipefd[0]);
+
+    // Reset cmd_copy since parse_job_command uses strtok
+    strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
+        out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
+    }
+    else if (TAGRMDIR(cmd_copy, folder, sizeof(folder))) {
+        out = rmdirCMD(folder, mkdir_op, sizeof(mkdir_op));
+    }
+    else {
+        seconds = TAGS(cmd, argv, &is_sleep);
+        
+        if (is_sleep) clock_nsleep(seconds, 0);
+        else if (strcmp(cmd, "ls") == 0) out = ls();
+        else if (strcmp(cmd, "pwd") == 0) out = pwd();
+        else if (strcmp(cmd, "joblist") == 0) _exit(0);
+        else out = "command not found\n";
+    }
+
+    if (out) write(pipefd[1], out, strlen(out));
+    close(pipefd[1]);
+    _exit(0);
 }
 }
 // ----- Tokenize And Get Sleep (TAGS) -----
@@ -426,5 +455,166 @@ bool TAGRMDIR(const char *input, char *folder_name, size_t max_len) {
 
     strncpy(folder_name, token, max_len - 1);
     folder_name[max_len - 1] = '\0';
+    return true;
+}
+
+void fg_job(int job_id) {
+    Job *temp = head;
+    while (temp != NULL) {
+        if (temp->job_id == job_id) {
+            printw("DEBUG: Found job %d with PID %d, status %d\n", job_id, temp->pid, temp->status);
+            refresh();
+            
+            if (temp->status == DONE) {
+                printw("Job [%d] is already done\n", job_id);
+                refresh();
+                return;
+            }
+            
+            if (temp->status == STOPPED) {
+                kill(temp->pid, SIGCONT);
+            }
+            
+            temp->status = RUNNING;
+            printw("[%d] %s continued in foreground\n", temp->job_id, temp->cmd);
+            refresh();
+            
+            int status;
+            printw("DEBUG: About to waitpid on %d\n", temp->pid);
+            refresh();
+            
+            pid_t result = waitpid(temp->pid, &status, WUNTRACED);
+            
+            printw("DEBUG: waitpid returned %d, errno=%d\n", result, errno);
+            refresh();
+            
+            if (result == -1) {
+                printw("DEBUG: waitpid error: %s\n", strerror(errno));
+                refresh();
+            }}
+    while (temp != NULL) {
+        if (temp->job_id == job_id) {
+            if (temp->status == DONE) {
+                printw("Job [%d] is already done\n", job_id);
+                refresh();
+                return;
+            }
+            
+            // Send SIGCONT if stopped
+            if (temp->status == STOPPED) {
+                kill(temp->pid, SIGCONT);
+            }
+            
+            temp->status = RUNNING;
+            printw("[%d] %s continued in foreground\n", temp->job_id, temp->cmd);
+            refresh();
+            
+            // Wait for the process - this should block
+            int status;
+            while (1) {
+                pid_t result = waitpid(temp->pid, &status, WUNTRACED);
+                
+                if (result == -1) {
+                    if (errno == ECHILD) {
+                        // Child already exited
+                        temp->status = DONE;
+                        printw("\n[%d]+ Done %s\n", temp->job_id, temp->cmd);
+                    } else {
+                        perror("waitpid");
+                    }
+                    break;
+                }
+                
+                if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    temp->status = DONE;
+                    printw("\n[%d]+ Done %s\n", temp->job_id, temp->cmd);
+                    break;
+                } else if (WIFSTOPPED(status)) {
+                    temp->status = STOPPED;
+                    printw("\n[%d]+ Stopped %s\n", temp->job_id, temp->cmd);
+                    break;
+                }
+            }
+            refresh();
+            return;
+        }
+        temp = temp->next;
+    }
+    printw("Job [%d] not found\n", job_id);
+    refresh();
+}
+    }
+void bg_job(int job_id) {
+    Job *temp = head;
+    while (temp != NULL) {
+        if (temp->job_id == job_id) {
+            if (temp->status == STOPPED) {
+                // Send SIGCONT to resume in background
+                kill(temp->pid, SIGCONT);
+                temp->status = RUNNING;
+                printw("[%d] %s continued in background\n", temp->job_id, temp->cmd);
+                refresh();
+                return;
+            }
+            if (temp->status == RUNNING) {
+                printw("Job [%d] is already running\n", job_id);
+            } else {
+                printw("Job [%d] is done\n", job_id);
+            }
+            refresh();
+            return;
+        }
+        temp = temp->next;
+    }
+    printw("Job [%d] not found\n", job_id);
+    refresh();
+}
+
+bool parse_job_command(const char *input, char *cmd, int *job_id) {
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+    
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL) return false;
+    
+    strcpy(cmd, token);
+    
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    
+    // Check if it's a valid number
+    for (int i = 0; token[i]; i++) {
+        if (!isdigit((unsigned char)token[i])) return false;
+    }
+    
+    *job_id = atoi(token);
+    return true;
+}
+
+bool TAGCD(const char *input, char *dir_name, size_t max_len) {
+    if (input == NULL || dir_name == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "cd") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) {
+        // No argument means go to home directory
+        const char *home = getenv("HOME");
+        if (home) {
+            strncpy(dir_name, home, max_len - 1);
+            dir_name[max_len - 1] = '\0';
+            return true;
+        }
+        return false;
+    }
+
+    strncpy(dir_name, token, max_len - 1);
+    dir_name[max_len - 1] = '\0';
     return true;
 }
