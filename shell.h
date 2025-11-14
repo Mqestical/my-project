@@ -43,4 +43,7 @@ static void trim_whitespace(char *str);
 int TAGS(char *input, char *argv[], bool *is_sleep);
 char* mkdirCMD(char* dirname, char* output_buf, size_t buf_size);
 bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
+char* rmdirCMD(char* dirname, char* output_buf, size_t buf_size);
+bool TAGMKDIR(const char *input, char *folder_name, size_t max_len);
+bool TAGRMDIR(const char *input, char *folder_name, size_t max_len);
 #endif

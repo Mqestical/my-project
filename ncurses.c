@@ -22,20 +22,32 @@ char *shell_execute(const char *input) {
     char mkdir_op[256];
     char cmd_copy[256];
     strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
-    cmd_copy[255] = '\0';  // Fix: was 256
+    cmd_copy[255] = '\0';
     
     char folder[256];
     
-    // Check mkdir FIRST, before anything else modifies the string
+    // Check mkdir FIRST
     if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
         char *out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
         strcpy(result, out);
         return result;
     }
     
-    // Now safe to call TAGS since we're not doing mkdir
+    // Check rmdir - need fresh copy since TAGMKDIR modified cmd_copy
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+    
+    if (TAGRMDIR(cmd_copy, folder, sizeof(folder))) {
+        char *out = rmdirCMD(folder, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+    
+    // Now safe to call TAGS
     char *argv[32];
-    seconds = TAGS(cmd_copy, argv, &is_sleep);  // Use cmd_copy here too
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+    seconds = TAGS(cmd_copy, argv, &is_sleep);
     
     if (is_sleep) {
         clock_nsleep(seconds, 0);
