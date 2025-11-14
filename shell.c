@@ -15,14 +15,12 @@
 #include <signal.h>
 #include "shell.h"
 
-#define MAX_JOB_COUNT 100
-job_t jobs[MAX_JOB_COUNT];
-int job_count = 0;
+int job_id = 0;
 volatile sig_atomic_t sigchld_flag = 0;
-//volatile sig_atomic_t sigint_flag = 0;
-//volatile sig_atomic_t sigtstp_flag = 0; 
+Job *head = NULL;
 static char output[8192];
-// ----- Internal command: pwd -----=
+
+// ----- Internal command: pwd -----
 char *pwd(void) {
     static char buf[512];
     if (getcwd(buf, sizeof(buf)) == NULL) {
@@ -35,12 +33,7 @@ char *pwd(void) {
 
 // ----- Internal command: ls -----
 char *ls(void) {
-    long pid;
     char cwd[512];
-    char *arguments[] = {"ls", NULL};
-    jobs->pid = fork();
-    execvp("ls", arguments);
-    setpgid(jobs->pid , jobs->pid);
     if (getcwd(cwd, sizeof(cwd)) == NULL) {
         snprintf(output, sizeof(output), "error: getcwd failed\n");
         return output;
@@ -67,64 +60,142 @@ char *ls(void) {
         strcat(output, "\n");
         bpos += d->d_reclen;
     }
-    if (job_count < MAX_JOB_COUNT) {
-            jobs[job_count].pid = (long)pid;
-            strncpy(jobs[job_count].cmd, "ls", sizeof(jobs[job_count].cmd) - 1);
-            jobs[job_count].cmd[sizeof(jobs[job_count].cmd) - 1] = '\0';
-            jobs[job_count].status = RUNNING;
-            jobs[job_count].job_num = job_count + 1;
-            printw("[%d] %d %s\n", jobs[job_count].job_num, (int)pid, jobs[job_count].cmd);
-            job_count++;
-        } else {
-            printw("error: job table full.\n");
-        }
-    jobs->status = RUNNING;
-    waitpid(pid, (int*)jobs->status, WNOHANG | WUNTRACED); // marker
 
     close(dirfd);
+    remove_done_jobs(&head);
     return output;
 }
 
 
-int ends_with_ampersand(char *input) {
+int ends_with_ampersand(const char *input) {
     int len = strlen(input);
     if (len == 0) return 0;
 
     int i = len - 1;
-    while (i >= 0 && isspace((unsigned char)input[i])) {
+
+    // skip spaces
+    while (i >= 0 && isspace((unsigned char)input[i]))
         i--;
-    }
 
-    if (i < 0) return 0; 
+    if (i < 0) return 0;
 
-    int is_bg = (input[i] == '&');
-
-    input[i + 1] = '\0';
-
-    return is_bg;
+    return input[i] == '&';
 }
 
+
+// ----- Sleep helper -----
 void clock_nsleep(int seconds, long nanoseconds) {
-    
     struct timespec ts = {seconds, nanoseconds};
     long ret = syscall(SYS_clock_nanosleep, CLOCK_REALTIME, 0, &ts, NULL);
     if (ret != 0) perror("clock_nanosleep");
 }
-void BG_process(char *ampsand_input) {
-    // Trim trailing spaces and '&'
-    int len = strlen(ampsand_input);
-    while (len > 0 && isspace((unsigned char)ampsand_input[len - 1]))
-        ampsand_input[--len] = '\0';
-    if (len > 0 && ampsand_input[len - 1] == '&')
-        ampsand_input[--len] = '\0';
 
-    // If empty after trimming
-    if (len == 0) {
-        printw("error: empty command.\n");
+// ----- Add job -----
+void add_job(Job **head, const char *cmd) {
+    job_id++;
+    Job *new_job = malloc(sizeof(Job));
+    new_job->job_id = job_id;
+    new_job->status = RUNNING;
+    new_job->pid = 0; // will set after fork
+    strncpy(new_job->cmd, cmd, 255);
+    new_job->cmd[255] = '\0';
+    new_job->next = NULL;
+
+    if (*head == NULL) {
+        *head = new_job;
+    } else {
+        Job *temp = *head;
+        while (temp->next != NULL)
+            temp = temp->next;
+        temp->next = new_job;
+    }
+}
+
+// ----- Remove finished jobs -----
+void remove_done_jobs(Job **head) {
+    Job *current = *head;
+    Job *prev = NULL;
+
+    while (current != NULL) {
+        if (current->status == DONE) {
+            if (prev == NULL) *head = current->next;
+            else prev->next = current->next;
+
+            Job *to_free = current;
+            current = current->next;
+            free(to_free);
+        } else {
+            prev = current;
+            current = current->next;
+        }
+    }
+}
+
+// ----- Print jobs -----
+void print_jobs(Job *head) {
+    Job *temp = head;
+    while (temp != NULL) {
+        printw("[%d] %s (%s)\n", temp->job_id, temp->cmd,
+               temp->status == RUNNING ? "RUNNING" :
+               temp->status == STOPPED ? "STOPPED" : "DONE");
+        temp = temp->next;
+        refresh();
+    }
+}
+
+// ----- Handle SIGCHLD -----
+void handle_sigchld() {
+    int status;
+    pid_t w;
+    while ((w = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        Job *temp = head;
+        while (temp != NULL) {
+            if (temp->pid == w) {
+                if (WIFEXITED(status) || WIFSIGNALED(status))
+                    temp->status = DONE;
+                else if (WIFSTOPPED(status))
+                    temp->status = STOPPED;
+                else if (WIFCONTINUED(status))
+                    temp->status = RUNNING;
+            }
+            temp = temp->next;
+        }
+    }
+    sigchld_flag = 0;
+}
+
+// ----- Background process -----
+void BG_process(const char *input) {
+    if (input == NULL || strlen(input) == 0) {
+        printw("error: empty command\n");
         return;
     }
 
-    char *args[] = { ampsand_input, NULL };
+    // Copy input so we can modify it
+    char cmd[256];
+    strncpy(cmd, input, 255);
+    cmd[255] = '\0';
+
+    // Remove trailing &
+    int len = strlen(cmd);
+    if (len > 0 && cmd[len-1] == '&') {
+        cmd[len-1] = '\0';
+    }
+
+    // Trim spaces
+    trim_whitespace(cmd);
+
+    if (strlen(cmd) == 0) {
+        printw("error: empty command after removing &\n");
+        return;
+    }
+
+    // Add job to linked list
+    add_job(&head, cmd);
+
+    // Get the last added job
+    Job *new_job = head;
+    while (new_job->next != NULL) new_job = new_job->next;
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -132,55 +203,64 @@ void BG_process(char *ampsand_input) {
         return;
     }
 
-    if (pid == 0) {
-        // child process
-        execvp(ampsand_input, args);
-        perror("execvp failed");
-        _exit(1);
-    } else {
-        // parent: store in job table
-        if (job_count < MAX_JOB_COUNT) {
-            jobs[job_count].pid = pid;
-            strncpy(jobs[job_count].cmd, ampsand_input, sizeof(jobs[job_count].cmd) - 1);
-            jobs[job_count].cmd[sizeof(jobs[job_count].cmd) - 1] = '\0';
-            jobs[job_count].status = RUNNING;
-            jobs[job_count].job_num = job_count + 1;
-            printw("[%d] %d %s\n", jobs[job_count].job_num, (int)pid, jobs[job_count].cmd);
-            job_count++;
-        } else {
-            printw("error: job table full.\n");
-        }
+   if (pid == 0) {
+    // child process
+    if (strcmp(cmd, "ls") == 0) {
+        printw("%s", ls());
+        fflush(stdout);
+    } else if (strcmp(cmd, "pwd") == 0) {
+        printw("%s", pwd());
+        fflush(stdout);
+        exit(0);
     }
+} else {
+        // Parent
+        new_job->pid = pid;
+        printw("[%d] %d\n", new_job->job_id, pid);
+        refresh();
+    }
+
+    return; // leave it for later (placeholder)
+
 }
 
-void sigchld (int signal) {
-    sigchld_flag = 1;
-}
-
-void sigint (int signal) {
-    write(STDOUT_FILENO, "Caught Ctrl+C, Terminating...", 32);
-}
-
-void sigtstp (int signal) {
-    write(STDOUT_FILENO, "...", 19);
-}
+// ----- Signal handlers -----
+void sigchld(int signal) { sigchld_flag = 1; }
+void sigint(int signal) { write(STDOUT_FILENO, "Ctrl+C detected\n", 16); }
+void sigtstp(int signal) { write(STDOUT_FILENO, "Ctrl+Z detected\n", 16); }
 
 void sighandler(int signal) {
     struct sigaction sa;
+
     sa.sa_handler = &sigchld;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;   // restart interrupted syscalls
+    sa.sa_flags = SA_RESTART;
     sigaction(SIGCHLD, &sa, NULL);
 
-    // SIGINT
     sa.sa_handler = &sigint;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
-    // SIGTSTP
     sa.sa_handler = &sigtstp;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTSTP, &sa, NULL);
+}
+
+// ----- Trim leading and trailing whitespace -----
+static void trim_whitespace(char *str) {
+    char *end;
+
+    // Trim leading
+    while(isspace((unsigned char)*str)) str++;
+
+    if(*str == 0) return;
+
+    // Trim trailing
+    end = str + strlen(str) - 1;
+    while(end > str && isspace((unsigned char)*end)) end--;
+
+    // Write new null terminator
+    *(end + 1) = '\0';
 }
