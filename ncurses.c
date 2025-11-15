@@ -21,14 +21,11 @@ char *shell_execute(const char *input) {
     
     char mkdir_op[256];
     char cmd_copy[256];
-    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
-    cmd_copy[255] = '\0';
-    
     char folder[256];
     char cmd[256];
     int job_num;
     
-    // Check for fg command
+    // Check for fg/bg command
     if (parse_job_command(input, cmd, &job_num)) {
         if (strcmp(cmd, "fg") == 0) {
             fg_job(job_num);
@@ -40,14 +37,26 @@ char *shell_execute(const char *input) {
         }
     }
     
+    // Check cd
     char dir[256];
-if (TAGCD(input, dir, sizeof(dir))) {
-    char *out = cdCMD(dir, mkdir_op, sizeof(mkdir_op));
-    strcpy(result, out);
-    return result;
-}
+    if (TAGCD(input, dir, sizeof(dir))) {
+        char *out = cdCMD(dir, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+
+    // Check echo
+    char text[256];
+    if (TAGECHO(input, text, sizeof(text))) {
+        char *out = echoCMD(text, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
 
     // Check mkdir
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+    
     if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
         char *out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
         strcpy(result, out);
@@ -64,6 +73,75 @@ if (TAGCD(input, dir, sizeof(dir))) {
         return result;
     }
     
+    // Check cat
+    char filename[256];
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGCAT(cmd_copy, filename, sizeof(filename))) {
+        char *out = catCMD(filename, result, sizeof(result));
+        return out;
+    }
+
+    // Check touch
+    if (TAGTOUCH(input, filename, sizeof(filename))) {
+        char *out = touchCMD(filename, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+
+    // Check cp
+    char src[256], dest[256];
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGCP(cmd_copy, src, dest, sizeof(src))) {
+        char *out = cpCMD(src, dest, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+
+    // Check mv
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGMV(cmd_copy, src, dest, sizeof(src))) {
+        char *out = mvCMD(src, dest, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+
+    // Check grep
+    char pattern[256];
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGGREP(cmd_copy, pattern, filename, sizeof(pattern))) {
+        char *out = grepCMD(pattern, filename, result, sizeof(result));
+        return out;
+    }
+
+    // Check find
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGFIND(cmd_copy, filename, sizeof(filename))) {
+        char *out = findCMD(filename, result, sizeof(result));
+        return out;
+    }
+
+    // Check chmod
+    char mode[256];
+    strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+    cmd_copy[255] = '\0';
+
+    if (TAGCHMOD(cmd_copy, mode, filename, sizeof(mode))) {
+        char *out = chmodCMD(mode, filename, mkdir_op, sizeof(mkdir_op));
+        strcpy(result, out);
+        return result;
+    }
+
+    // Check sleep
     char *argv[32];
     strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
     cmd_copy[255] = '\0';
@@ -110,7 +188,8 @@ int main() {
 
     char input[256];
     while (1) {
-        printw("\n<%s>: ", username);
+        char* directory = pwd();
+        printw("\n<%s %s>: ", username, directory);
         refresh();
         getstr(input);
 

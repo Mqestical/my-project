@@ -56,7 +56,22 @@ void bg_job(int job_id);
 bool parse_job_command(const char *input, char *cmd, int *job_id);
 bool TAGCD(const char *input, char *dir_name, size_t max_len);
 char* cdCMD(char* dirname, char* output_buf, size_t buf_size);
-
+char* echoCMD(const char* text, char* output_buf, size_t buf_size);
+bool TAGECHO(const char *input, char *text, size_t max_len);
+char* catCMD(const char* filename, char* output_buf, size_t buf_size);
+bool TAGCAT(const char *input, char *filename, size_t max_len);
+char* touchCMD(const char* filename, char* output_buf, size_t buf_size);
+char* cpCMD(const char* src, const char* dest, char* output_buf, size_t buf_size);
+char* mvCMD(const char* src, const char* dest, char* output_buf, size_t buf_size);
+bool TAGTOUCH(const char *input, char *filename, size_t max_len);
+bool TAGCP(const char *input, char *src, char *dest, size_t max_len);
+bool TAGMV(const char *input, char *src, char *dest, size_t max_len);
+char* grepCMD(const char* pattern, const char* filename, char* output_buf, size_t buf_size);
+char* findCMD(const char* name, char* output_buf, size_t buf_size);
+char* chmodCMD(const char* mode_str, const char* filename, char* output_buf, size_t buf_size);
+bool TAGGREP(const char *input, char *pattern, char *filename, size_t max_len);
+bool TAGFIND(const char *input, char *name, size_t max_len);
+bool TAGCHMOD(const char *input, char *mode, char *filename, size_t max_len);
 
 // ----- Internal command: pwd -----
 char *pwd(void) {
@@ -176,6 +191,251 @@ char* cdCMD(char* dirname, char* output_buf, size_t buf_size) {
         }
     }
 
+    return output_buf;
+}
+
+char* echoCMD(const char* text, char* output_buf, size_t buf_size) {
+    snprintf(output_buf, buf_size, "%s\n", text);
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Cat -----------------------------
+char* catCMD(const char* filename, char* output_buf, size_t buf_size) {
+    int fd = syscall(SYS_openat, AT_FDCWD, filename, O_RDONLY);
+    
+    if (fd == -1) {
+        if (errno == ENOENT) {
+            snprintf(output_buf, buf_size, "cat: %s: No such file or directory\n", filename);
+        } else if (errno == EACCES) {
+            snprintf(output_buf, buf_size, "cat: %s: Permission denied\n", filename);
+        } else {
+            snprintf(output_buf, buf_size, "cat: %s: %s\n", filename, strerror(errno));
+        }
+        return output_buf;
+    }
+    
+    char temp_buf[4096];
+    int total_read = 0;
+    output_buf[0] = '\0';
+    
+    while (1) {
+        int n = syscall(SYS_read, fd, temp_buf, sizeof(temp_buf) - 1);
+        if (n <= 0) break;
+        
+        temp_buf[n] = '\0';
+        
+        // Check if we have space left
+        if (total_read + n < buf_size - 1) {
+            strcat(output_buf, temp_buf);
+            total_read += n;
+        } else {
+            break; // Buffer full
+        }
+    }
+    
+    syscall(SYS_close, fd);
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Touch -----------------------------
+char* touchCMD(const char* filename, char* output_buf, size_t buf_size) {
+    // Try to open file, create if doesn't exist
+    int fd = syscall(SYS_openat, AT_FDCWD, filename, O_WRONLY | O_CREAT | O_NOCTTY | O_NONBLOCK, 0644);
+    
+    if (fd == -1) {
+        snprintf(output_buf, buf_size, "touch: cannot touch '%s': %s\n", filename, strerror(errno));
+        return output_buf;
+    }
+    
+    // Update timestamp
+    syscall(SYS_close, fd);
+    
+    struct timespec times[2];
+    syscall(SYS_clock_gettime, CLOCK_REALTIME, &times[0]);
+    times[1] = times[0];
+    
+    int ret = syscall(SYS_utimensat, AT_FDCWD, filename, times, 0);
+    if (ret == 0) {
+        snprintf(output_buf, buf_size, "");  // Success, no output
+    } else {
+        snprintf(output_buf, buf_size, "touch: cannot touch '%s': %s\n", filename, strerror(errno));
+    }
+    
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Copy -----------------------------
+char* cpCMD(const char* src, const char* dest, char* output_buf, size_t buf_size) {
+    int src_fd = syscall(SYS_openat, AT_FDCWD, src, O_RDONLY);
+    if (src_fd == -1) {
+        snprintf(output_buf, buf_size, "cp: cannot open '%s': %s\n", src, strerror(errno));
+        return output_buf;
+    }
+    
+    int dest_fd = syscall(SYS_openat, AT_FDCWD, dest, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (dest_fd == -1) {
+        snprintf(output_buf, buf_size, "cp: cannot create '%s': %s\n", dest, strerror(errno));
+        syscall(SYS_close, src_fd);
+        return output_buf;
+    }
+    
+    char buffer[4096];
+    int n;
+    while ((n = syscall(SYS_read, src_fd, buffer, sizeof(buffer))) > 0) {
+        if (syscall(SYS_write, dest_fd, buffer, n) != n) {
+            snprintf(output_buf, buf_size, "cp: error writing to '%s': %s\n", dest, strerror(errno));
+            syscall(SYS_close, src_fd);
+            syscall(SYS_close, dest_fd);
+            return output_buf;
+        }
+    }
+    
+    syscall(SYS_close, src_fd);
+    syscall(SYS_close, dest_fd);
+    
+    if (n == -1) {
+        snprintf(output_buf, buf_size, "cp: error reading '%s': %s\n", src, strerror(errno));
+    } else {
+        snprintf(output_buf, buf_size, "");  // Success
+    }
+    
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Move -----------------------------
+char* mvCMD(const char* src, const char* dest, char* output_buf, size_t buf_size) {
+    int ret = syscall(SYS_renameat, AT_FDCWD, src, AT_FDCWD, dest);
+    
+    if (ret == 0) {
+        snprintf(output_buf, buf_size, "");  // Success
+    } else {
+        if (errno == EXDEV) {
+            // Cross-device, need to copy then delete
+            char* cp_result = cpCMD(src, dest, output_buf, buf_size);
+            if (strlen(cp_result) == 0) {  // Copy succeeded
+                syscall(SYS_unlinkat, AT_FDCWD, src, 0);
+            }
+            return cp_result;
+        } else {
+            snprintf(output_buf, buf_size, "mv: cannot move '%s' to '%s': %s\n", 
+                     src, dest, strerror(errno));
+        }
+    }
+    
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Grep -----------------------------
+char* grepCMD(const char* pattern, const char* filename, char* output_buf, size_t buf_size) {
+    int fd = syscall(SYS_openat, AT_FDCWD, filename, O_RDONLY);
+    
+    if (fd == -1) {
+        snprintf(output_buf, buf_size, "grep: %s: %s\n", filename, strerror(errno));
+        return output_buf;
+    }
+    
+    char file_buf[8192];
+    int n = syscall(SYS_read, fd, file_buf, sizeof(file_buf) - 1);
+    syscall(SYS_close, fd);
+    
+    if (n <= 0) {
+        output_buf[0] = '\0';
+        return output_buf;
+    }
+    
+    file_buf[n] = '\0';
+    output_buf[0] = '\0';
+    
+    // Make a copy to preserve original for strtok
+    char file_copy[8192];
+    strncpy(file_copy, file_buf, sizeof(file_copy) - 1);
+    file_copy[sizeof(file_copy) - 1] = '\0';
+    
+    // Simple line-by-line grep
+    char *line = strtok(file_copy, "\n");
+    while (line != NULL) {
+        if (strstr(line, pattern) != NULL) {
+            // Check if we have space
+            if (strlen(output_buf) + strlen(line) + 2 < buf_size) {
+                strcat(output_buf, line);
+                strcat(output_buf, "\n");
+            }
+        }
+        line = strtok(NULL, "\n");
+    }
+    
+    if (strlen(output_buf) == 0) {
+        snprintf(output_buf, buf_size, "grep: no matches found for '%s'\n", pattern);
+    }
+    
+    return output_buf;
+}
+// ------------------------- Internal Command: Find -----------------------------
+void find_recursive(const char *path, const char *name, char *output_buf, size_t buf_size) {
+    int dirfd = syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_DIRECTORY);
+    if (dirfd == -1) return;
+    
+    char buf[8192];
+    int nread = syscall(SYS_getdents64, dirfd, buf, sizeof(buf));
+    
+    for (int bpos = 0; bpos < nread;) {
+        struct linux_dirent64 *d = (struct linux_dirent64 *)(buf + bpos);
+        
+        // Skip . and ..
+        if (strcmp(d->d_name, ".") != 0 && strcmp(d->d_name, "..") != 0) {
+            // Check if name matches
+            if (strstr(d->d_name, name) != NULL) {
+                char fullpath[512];
+                snprintf(fullpath, sizeof(fullpath), "%s/%s\n", path, d->d_name);
+                strncat(output_buf, fullpath, buf_size - strlen(output_buf) - 1);
+            }
+            
+            // Recurse into directories
+            if (d->d_type == 4) {  // DT_DIR
+                char subdir[512];
+                snprintf(subdir, sizeof(subdir), "%s/%s", path, d->d_name);
+                find_recursive(subdir, name, output_buf, buf_size);
+            }
+        }
+        
+        bpos += d->d_reclen;
+    }
+    
+    syscall(SYS_close, dirfd);
+}
+
+char* findCMD(const char* name, char* output_buf, size_t buf_size) {
+    output_buf[0] = '\0';
+    find_recursive(".", name, output_buf, buf_size);
+    
+    if (strlen(output_buf) == 0) {
+        snprintf(output_buf, buf_size, "find: '%s': No matches found\n", name);
+    }
+    
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Chmod -----------------------------
+char* chmodCMD(const char* mode_str, const char* filename, char* output_buf, size_t buf_size) {
+    // Parse octal mode
+    mode_t mode = 0;
+    for (int i = 0; mode_str[i]; i++) {
+        if (!isdigit(mode_str[i])) {
+            snprintf(output_buf, buf_size, "chmod: invalid mode: '%s'\n", mode_str);
+            return output_buf;
+        }
+        mode = mode * 8 + (mode_str[i] - '0');
+    }
+    
+    int ret = syscall(SYS_fchmodat, AT_FDCWD, filename, mode, 0);
+    
+    if (ret == 0) {
+        snprintf(output_buf, buf_size, "");  // Success
+    } else {
+        snprintf(output_buf, buf_size, "chmod: cannot change permissions of '%s': %s\n", 
+                 filename, strerror(errno));
+    }
+    
     return output_buf;
 }
 
@@ -303,6 +563,10 @@ void BG_process(const char *input) {
     if (input == NULL || strlen(input) == 0) return;
 
     char cmd[256];
+    char text[256];
+    char filename[256];
+    char pattern[256];
+    char mode[256];
     strncpy(cmd, input, 255);
     cmd[255] = '\0';
 
@@ -356,7 +620,7 @@ void BG_process(const char *input) {
         }
     }
 
-    // Reset cmd_copy since parse_job_command uses strtok
+    // reset cmd_copy since parse_job_command uses strtok
     strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
     cmd_copy[255] = '\0';
 
@@ -366,6 +630,30 @@ void BG_process(const char *input) {
     else if (TAGRMDIR(cmd_copy, folder, sizeof(folder))) {
         out = rmdirCMD(folder, mkdir_op, sizeof(mkdir_op));
     }
+
+else if (TAGGREP(cmd_copy, pattern, filename, sizeof(pattern))) {
+    out = grepCMD(pattern, filename, mkdir_op, sizeof(mkdir_op));
+}
+else if (TAGFIND(cmd_copy, filename, sizeof(filename))) {
+    out = findCMD(filename, mkdir_op, sizeof(mkdir_op));
+}
+else if (TAGCHMOD(cmd_copy, mode, filename, sizeof(mode))) {
+    out = chmodCMD(mode, filename, mkdir_op, sizeof(mkdir_op));
+}
+
+    strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
+cmd_copy[255] = '\0';
+
+if (TAGECHO(cmd_copy, text, sizeof(text))) {
+    out = echoCMD(text, mkdir_op, sizeof(mkdir_op));
+}
+else if (TAGCAT(cmd_copy, filename, sizeof(filename))) {
+    out = catCMD(filename, mkdir_op, sizeof(mkdir_op));
+}
+else if (TAGMKDIR(cmd_copy, folder, sizeof(folder))) {
+    out = mkdirCMD(folder, mkdir_op, sizeof(mkdir_op));
+}
+
     else {
         seconds = TAGS(cmd, argv, &is_sleep);
         
@@ -616,5 +904,171 @@ bool TAGCD(const char *input, char *dir_name, size_t max_len) {
 
     strncpy(dir_name, token, max_len - 1);
     dir_name[max_len - 1] = '\0';
+    return true;
+}
+
+bool TAGECHO(const char *input, char *text, size_t max_len) {
+    if (input == NULL || text == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "echo") != 0) return false;
+
+    // Get the rest of the line after "echo "
+    const char *rest = input + 4; // Skip "echo"
+    while (*rest == ' ' || *rest == '\t') rest++; // Skip whitespace
+    
+    strncpy(text, rest, max_len - 1);
+    text[max_len - 1] = '\0';
+    return true;
+}
+
+
+bool TAGCAT(const char *input, char *filename, size_t max_len) {
+    if (input == NULL || filename == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "cat") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+
+    strncpy(filename, token, max_len - 1);
+    filename[max_len - 1] = '\0';
+    return true;
+}
+
+bool TAGTOUCH(const char *input, char *filename, size_t max_len) {
+    if (input == NULL || filename == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "touch") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+
+    strncpy(filename, token, max_len - 1);
+    filename[max_len - 1] = '\0';
+    return true;
+}
+
+bool TAGCP(const char *input, char *src, char *dest, size_t max_len) {
+    if (input == NULL || src == NULL || dest == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "cp") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(src, token, max_len - 1);
+    src[max_len - 1] = '\0';
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(dest, token, max_len - 1);
+    dest[max_len - 1] = '\0';
+
+    return true;
+}
+
+bool TAGMV(const char *input, char *src, char *dest, size_t max_len) {
+    if (input == NULL || src == NULL || dest == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "mv") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(src, token, max_len - 1);
+    src[max_len - 1] = '\0';
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(dest, token, max_len - 1);
+    dest[max_len - 1] = '\0';
+
+    return true;
+}
+
+bool TAGGREP(const char *input, char *pattern, char *filename, size_t max_len) {
+    if (input == NULL || pattern == NULL || filename == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "grep") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(pattern, token, max_len - 1);
+    pattern[max_len - 1] = '\0';
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(filename, token, max_len - 1);
+    filename[max_len - 1] = '\0';
+
+    return true;
+}
+
+bool TAGFIND(const char *input, char *name, size_t max_len) {
+    if (input == NULL || name == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "find") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+
+    strncpy(name, token, max_len - 1);
+    name[max_len - 1] = '\0';
+    return true;
+}
+
+bool TAGCHMOD(const char *input, char *mode, char *filename, size_t max_len) {
+    if (input == NULL || mode == NULL || filename == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "chmod") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(mode, token, max_len - 1);
+    mode[max_len - 1] = '\0';
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(filename, token, max_len - 1);
+    filename[max_len - 1] = '\0';
+
     return true;
 }
