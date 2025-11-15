@@ -205,9 +205,15 @@ int main() {
     initscr();
     cbreak();
 
-    printw(" WELCOME %s\n\n", username);
-    printw(" MXJESTICAL SHELL\n\n");
-    printw(" GNU GENERAL PUBLIC LICENSE 3\n\n");
+    start_color();
+    use_default_colors();
+    if (!has_colors) {
+        printw("error: terminal does not support colors.");
+        return EXIT_FAILURE;
+    }
+    printw("                                                    WELCOME %s\n\n", username);
+    printw("                                                    MXJESTICAL SHELL\n\n");
+    printw("                                                    GNU GENERAL PUBLIC LICENSE 3\n\n");
 
     char input[256];
     while (1) {

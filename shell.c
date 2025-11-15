@@ -1,3 +1,17 @@
+
+/*
+|-----------------------------------------------------------------------------------------------
+|                Copyright (c) Kingdom Of Saudi Arabia, Muhammad Alhijab                            |
+|                Owner of SSMS (Specialized System Management Software)                             |
+|                         GNU GENERAL PUBLIC LICENSE 3                                         |
+|                                                                                              |
+|                          MXJESTICAL INTERACTIVE SHELL                                        |
+|                                                                                              |
+|-----------------------------------------------------------------------------------------------
+
+
+
+*/
 #define _GNU_SOURCE
 #include <sys/syscall.h>
 #include <sys/types.h>
