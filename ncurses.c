@@ -141,6 +141,29 @@ char *shell_execute(const char *input) {
         return result;
     }
 
+    // After chmod check
+char owner[256];
+strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);
+cmd_copy[255] = '\0';
+
+if (TAGCHOWN(cmd_copy, owner, filename, sizeof(owner))) {
+    char *out = chownCMD(owner, filename, mkdir_op, sizeof(mkdir_op));
+    strcpy(result, out);
+    return result;
+}
+
+// Check ps
+if (strcmp(input, "ps") == 0) {
+    char *out = psCMD(result, sizeof(result));
+    return out;
+}
+
+// Check top
+if (strcmp(input, "top") == 0) {
+    char *out = topCMD(result, sizeof(result));
+    return out;
+}
+
     // Check sleep
     char *argv[32];
     strncpy(cmd_copy, input, sizeof(cmd_copy) - 1);

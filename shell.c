@@ -18,7 +18,7 @@
 
 #define MAX_TOKENS 10
 #define MAX_LEN 255
-
+char owner[256];
 int job_id = 0;
 volatile sig_atomic_t sigchld_flag = 0;
 Job *head = NULL;
@@ -72,7 +72,10 @@ char* chmodCMD(const char* mode_str, const char* filename, char* output_buf, siz
 bool TAGGREP(const char *input, char *pattern, char *filename, size_t max_len);
 bool TAGFIND(const char *input, char *name, size_t max_len);
 bool TAGCHMOD(const char *input, char *mode, char *filename, size_t max_len);
-
+char* chownCMD(const char* owner, const char* filename, char* output_buf, size_t buf_size);
+char* psCMD(char* output_buf, size_t buf_size);
+char* topCMD(char* output_buf, size_t buf_size);
+bool TAGCHOWN(const char *input, char *owner, char *filename, size_t max_len);
 // ----- Internal command: pwd -----
 char *pwd(void) {
     static char buf[512];
@@ -439,6 +442,200 @@ char* chmodCMD(const char* mode_str, const char* filename, char* output_buf, siz
     return output_buf;
 }
 
+// ------------------------- Internal Command: Chown -----------------------------
+char* chownCMD(const char* owner, const char* filename, char* output_buf, size_t buf_size) {
+    // Parse owner (can be "user" or "user:group")
+    char owner_copy[256];
+    strncpy(owner_copy, owner, sizeof(owner_copy) - 1);
+    owner_copy[sizeof(owner_copy) - 1] = '\0';
+    
+    uid_t uid = -1;
+    gid_t gid = -1;
+    
+    char *colon = strchr(owner_copy, ':');
+    if (colon != NULL) {
+        *colon = '\0';
+        char *group = colon + 1;
+        
+        // Try to parse as numeric GID
+        gid = atoi(group);
+    }
+    
+    // Try to parse as numeric UID
+    uid = atoi(owner_copy);
+    
+    int ret = syscall(SYS_fchownat, AT_FDCWD, filename, uid, gid, 0);
+    
+    if (ret == 0) {
+        snprintf(output_buf, buf_size, "");  // Success
+    } else {
+        snprintf(output_buf, buf_size, "chown: cannot change ownership of '%s': %s\n", 
+                 filename, strerror(errno));
+    }
+    
+    return output_buf;
+}
+
+// ------------------------- Internal Command: PS -----------------------------
+char* psCMD(char* output_buf, size_t buf_size) {
+    output_buf[0] = '\0';
+    
+    strcat(output_buf, "PID    COMMAND\n");
+    
+    // Open /proc directory
+    int proc_fd = syscall(SYS_openat, AT_FDCWD, "/proc", O_RDONLY | O_DIRECTORY);
+    if (proc_fd == -1) {
+        snprintf(output_buf, buf_size, "ps: cannot open /proc\n");
+        return output_buf;
+    }
+    
+    char buf[8192];
+    int nread = syscall(SYS_getdents64, proc_fd, buf, sizeof(buf));
+    
+    for (int bpos = 0; bpos < nread;) {
+        struct linux_dirent64 *d = (struct linux_dirent64 *)(buf + bpos);
+        
+        // Check if directory name is a number (PID)
+        if (d->d_type == 4 && isdigit(d->d_name[0])) {
+            char cmdline_path[512];
+            snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%s/cmdline", d->d_name);
+            
+            int cmd_fd = syscall(SYS_openat, AT_FDCWD, cmdline_path, O_RDONLY);
+            if (cmd_fd != -1) {
+                char cmdbuf[256];
+                int n = syscall(SYS_read, cmd_fd, cmdbuf, sizeof(cmdbuf) - 1);
+                syscall(SYS_close, cmd_fd);
+                
+                if (n > 0) {
+                    cmdbuf[n] = '\0';
+                    // Replace null bytes with spaces
+                    for (int i = 0; i < n; i++) {
+                        if (cmdbuf[i] == '\0') cmdbuf[i] = ' ';
+                    }
+                    
+                    char line[512];
+                    snprintf(line, sizeof(line), "%-6s %s\n", d->d_name, cmdbuf);
+                    
+                    if (strlen(output_buf) + strlen(line) < buf_size - 1) {
+                        strcat(output_buf, line);
+                    }
+                }
+            }
+        }
+        
+        bpos += d->d_reclen;
+    }
+    
+    syscall(SYS_close, proc_fd);
+    return output_buf;
+}
+
+// ------------------------- Internal Command: Top -----------------------------
+char* topCMD(char* output_buf, size_t buf_size) {
+    output_buf[0] = '\0';
+    
+    // Read /proc/stat for CPU info
+    int stat_fd = syscall(SYS_openat, AT_FDCWD, "/proc/stat", O_RDONLY);
+    if (stat_fd != -1) {
+        char statbuf[1024];
+        int n = syscall(SYS_read, stat_fd, statbuf, sizeof(statbuf) - 1);
+        syscall(SYS_close, stat_fd);
+        
+        if (n > 0) {
+            statbuf[n] = '\0';
+            char *line = strtok(statbuf, "\n");
+            if (line != NULL && strncmp(line, "cpu ", 4) == 0) {
+                strcat(output_buf, "CPU: ");
+                strcat(output_buf, line);
+                strcat(output_buf, "\n\n");
+            }
+        }
+    }
+    
+    // Read /proc/meminfo for memory info
+    int mem_fd = syscall(SYS_openat, AT_FDCWD, "/proc/meminfo", O_RDONLY);
+    if (mem_fd != -1) {
+        char membuf[2048];
+        int n = syscall(SYS_read, mem_fd, membuf, sizeof(membuf) - 1);
+        syscall(SYS_close, mem_fd);
+        
+        if (n > 0) {
+            membuf[n] = '\0';
+            strcat(output_buf, "Memory:\n");
+            
+            char *line = strtok(membuf, "\n");
+            int count = 0;
+            while (line != NULL && count < 3) {
+                strcat(output_buf, line);
+                strcat(output_buf, "\n");
+                line = strtok(NULL, "\n");
+                count++;
+            }
+            strcat(output_buf, "\n");
+        }
+    }
+    
+    // List top processes
+    strcat(output_buf, "PID    CPU%   MEM    COMMAND\n");
+    
+    int proc_fd = syscall(SYS_openat, AT_FDCWD, "/proc", O_RDONLY | O_DIRECTORY);
+    if (proc_fd == -1) {
+        return output_buf;
+    }
+    
+    char buf[8192];
+    int nread = syscall(SYS_getdents64, proc_fd, buf, sizeof(buf));
+    
+    int proc_count = 0;
+    for (int bpos = 0; bpos < nread && proc_count < 10;) {
+        struct linux_dirent64 *d = (struct linux_dirent64 *)(buf + bpos);
+        
+        if (d->d_type == 4 && isdigit(d->d_name[0])) {
+            char stat_path[512];
+            snprintf(stat_path, sizeof(stat_path), "/proc/%s/stat", d->d_name);
+            
+            int stat_fd = syscall(SYS_openat, AT_FDCWD, stat_path, O_RDONLY);
+            if (stat_fd != -1) {
+                char statbuf[512];
+                int n = syscall(SYS_read, stat_fd, statbuf, sizeof(statbuf) - 1);
+                syscall(SYS_close, stat_fd);
+                
+                if (n > 0) {
+                    statbuf[n] = '\0';
+                    
+                    // Parse process name and stats
+                    char *paren_start = strchr(statbuf, '(');
+                    char *paren_end = strrchr(statbuf, ')');
+                    
+                    if (paren_start && paren_end) {
+                        char procname[256];
+                        int name_len = paren_end - paren_start - 1;
+                        if (name_len > 255) name_len = 255;
+                        strncpy(procname, paren_start + 1, name_len);
+                        procname[name_len] = '\0';
+                        
+                        char line[512];
+                        snprintf(line, sizeof(line), "%-6s %-6s %-6s %s\n", 
+                                d->d_name, "0.0", "0KB", procname);
+                        
+                        if (strlen(output_buf) + strlen(line) < buf_size - 1) {
+                            strcat(output_buf, line);
+                            proc_count++;
+                        }
+                    }
+                }
+            }
+        }
+        
+        bpos += d->d_reclen;
+    }
+    
+    syscall(SYS_close, proc_fd);
+    
+    strcat(output_buf, "\n(Press Ctrl+C to return to shell)\n");
+    return output_buf;
+}
+
 // ----- Check if input ends with & -----
 int ends_with_ampersand(const char *input) {
     int len = strlen(input);
@@ -641,6 +838,16 @@ else if (TAGCHMOD(cmd_copy, mode, filename, sizeof(mode))) {
     out = chmodCMD(mode, filename, mkdir_op, sizeof(mkdir_op));
 }
 
+
+else if (TAGCHOWN(cmd_copy, owner, filename, sizeof(owner))) {
+    out = chownCMD(owner, filename, mkdir_op, sizeof(mkdir_op));
+}
+else if (strcmp(cmd, "ps") == 0) {
+    out = psCMD(mkdir_op, sizeof(mkdir_op));
+}
+else if (strcmp(cmd, "top") == 0) {
+    out = topCMD(mkdir_op, sizeof(mkdir_op));
+}
     strncpy(cmd_copy, cmd, sizeof(cmd_copy) - 1);
 cmd_copy[255] = '\0';
 
@@ -1064,6 +1271,29 @@ bool TAGCHMOD(const char *input, char *mode, char *filename, size_t max_len) {
     if (token == NULL) return false;
     strncpy(mode, token, max_len - 1);
     mode[max_len - 1] = '\0';
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(filename, token, max_len - 1);
+    filename[max_len - 1] = '\0';
+
+    return true;
+}
+
+bool TAGCHOWN(const char *input, char *owner, char *filename, size_t max_len) {
+    if (input == NULL || owner == NULL || filename == NULL) return false;
+
+    char copy[256];
+    strncpy(copy, input, sizeof(copy) - 1);
+    copy[sizeof(copy)-1] = '\0';
+
+    char *token = strtok(copy, " \t\n");
+    if (token == NULL || strcmp(token, "chown") != 0) return false;
+
+    token = strtok(NULL, " \t\n");
+    if (token == NULL) return false;
+    strncpy(owner, token, max_len - 1);
+    owner[max_len - 1] = '\0';
 
     token = strtok(NULL, " \t\n");
     if (token == NULL) return false;

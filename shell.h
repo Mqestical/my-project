@@ -67,4 +67,8 @@ char* chmodCMD(const char* mode_str, const char* filename, char* output_buf, siz
 bool TAGGREP(const char *input, char *pattern, char *filename, size_t max_len);
 bool TAGFIND(const char *input, char *name, size_t max_len);
 bool TAGCHMOD(const char *input, char *mode, char *filename, size_t max_len);
+char* chownCMD(const char* owner, const char* filename, char* output_buf, size_t buf_size);
+char* psCMD(char* output_buf, size_t buf_size);
+char* topCMD(char* output_buf, size_t buf_size);
+bool TAGCHOWN(const char *input, char *owner, char *filename, size_t max_len);
 #endif
